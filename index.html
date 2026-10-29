@@ -131,7 +131,9 @@ button:focus-visible, .time:focus-within, .search:focus-visible, .switch input:f
 .editing .row:not(.here) .remove, .editing .row:not(.here) .handle { display: grid; }
 .editing .strip, .editing .note { display: none; }
 .editing .time { pointer-events: none; opacity: .45; font-size: 34px; }
-.editing .row.here { opacity: .6; }
+.change { display: none; font-size: 14px; flex-shrink: 0; }
+.editing .row.here .change { display: block; }
+.editing .row.here .time { opacity: .3; }
 
 .hint { margin: 18px 0 0; font-size: 12.5px; color: var(--muted); max-width: 40ch; }
 .prefs { margin-top: 22px; display: grid; gap: 4px; }
@@ -386,9 +388,17 @@ UTC|Coordinated Universal Time|UTC`;
   } catch (e) { /* older engines: curated list only */ }
 
   const HERE_ZONE = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (e) { return 'UTC'; } })();
-  const HERE = CITIES.find(c => c.zone === HERE_ZONE && c.name === zoneCityName(HERE_ZONE))
-    || CITIES.find(c => c.zone === HERE_ZONE)
-    || { name: zoneCityName(HERE_ZONE), country: '', zone: HERE_ZONE };
+  // Muscat is an alias of Dubai's zone; iPhones in the UAE can report either one.
+  const PREFERRED_HOME = { 'Asia/Muscat': 'Dubai', 'Asia/Dubai': 'Dubai' };
+  // Stored per device zone, so a chosen city doesn't follow you when you travel.
+  function hereCity() {
+    const own = state.homeFor && state.homeFor[HERE_ZONE];
+    if (own && validZone(own.zone)) return own;
+    return CITIES.find(c => c.name === PREFERRED_HOME[HERE_ZONE])
+      || CITIES.find(c => c.zone === HERE_ZONE && c.name === zoneCityName(HERE_ZONE))
+      || CITIES.find(c => c.zone === HERE_ZONE)
+      || { name: zoneCityName(HERE_ZONE), country: '', zone: HERE_ZONE };
+  }
 
   // ---- time math ----
   const fmtCache = new Map();
@@ -496,6 +506,7 @@ UTC|Coordinated Universal Time|UTC`;
   }
   state.cities = state.cities.filter(c => c && validZone(c.zone)).map(c => ({ name: String(c.name), country: String(c.country || ''), zone: c.zone }));
   if (typeof state.h24 !== 'boolean') state.h24 = defaultH24;
+  if (!state.homeFor || typeof state.homeFor !== 'object') state.homeFor = {};
 
   let pinned = null;   // fixed instant (ms) while scrubbing or after setting a time; null = live
   let editing = false;
@@ -514,7 +525,7 @@ UTC|Coordinated Universal Time|UTC`;
 
   function buildList() {
     list.textContent = '';
-    rows = [{ ...HERE, here: true }, ...state.cities].map(c => {
+    rows = [{ ...hereCity(), here: true }, ...state.cities].map(c => {
       const li = document.createElement('li');
       li.className = 'row' + (c.here ? ' here' : '');
       li.innerHTML = `
@@ -527,7 +538,7 @@ UTC|Coordinated Universal Time|UTC`;
           <canvas class="strip" aria-hidden="true"></canvas>
           <div class="note" hidden></div>
         </div>
-        ${c.here ? '' : `<span class="handle" aria-hidden="true">${ICON_GRIP}</span>`}`;
+        ${c.here ? '<button class="text-btn change" type="button">Change</button>' : `<span class="handle" aria-hidden="true">${ICON_GRIP}</span>`}`;
       const r = {
         c, el: li, hm: li.querySelector('.hm'), ap: li.querySelector('.ap'), meta: li.querySelector('.meta'),
         input: li.querySelector('input'), canvas: li.querySelector('canvas'), note: li.querySelector('.note')
@@ -582,6 +593,8 @@ UTC|Coordinated Universal Time|UTC`;
       store.save();
       buildList();
     });
+    const change = r.el.querySelector('.change');
+    if (change) change.addEventListener('click', () => openSheet('home'));
     const handle = r.el.querySelector('.handle');
     if (handle) handle.addEventListener('pointerdown', e => startReorder(e, handle, r.el));
   }
@@ -719,13 +732,16 @@ UTC|Coordinated Universal Time|UTC`;
   // ---- add-city sheet ----
   const norm = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
   let shown = [];
+  let sheetMode = 'add';
   function renderResults() {
     const n = norm(q.value);
+    const nowOff = offsetMin(HERE_ZONE, Date.now());
+    const pool = sheetMode === 'home' ? CITIES.concat(EXTRA).filter(c => offsetMin(c.zone, Date.now()) === nowOff) : CITIES;
     if (!n) {
-      shown = CITIES.slice().sort((a, b) => a.name.localeCompare(b.name));
+      shown = pool.filter(c => sheetMode === 'add' || CITIES.includes(c)).sort((a, b) => a.name.localeCompare(b.name));
     } else {
       const scored = [];
-      for (const c of CITIES.concat(EXTRA)) {
+      for (const c of sheetMode === 'home' ? pool : CITIES.concat(EXTRA)) {
         const nm = norm(c.name), co = norm(c.country), z = norm(c.zone);
         const s = nm.startsWith(n) ? 0 : nm.includes(n) ? 1 : co.startsWith(n) ? 2 : co.includes(n) ? 3 : z.includes(n) ? 4 : -1;
         if (s >= 0) scored.push([s, c]);
@@ -735,14 +751,17 @@ UTC|Coordinated Universal Time|UTC`;
     const now = Date.now(), hereOff = offsetMin(HERE_ZONE, now);
     results.innerHTML = shown.length ? shown.map((c, i) => {
       const w = wall(c.zone, now), t = fmtTime(w);
-      const added = state.cities.some(x => x.zone === c.zone && x.name === c.name);
+      const home = hereCity();
+      const added = sheetMode === 'home' ? (c.name === home.name && c.zone === home.zone) : state.cities.some(x => x.zone === c.zone && x.name === c.name);
       return `<button class="result" type="button" data-i="${i}"${added ? ' disabled' : ''}>
-        <span class="r-who"><span class="r-name">${esc(c.name)}</span><span class="r-country">${esc(c.country)}${added ? ' · added' : ''}</span></span>
+        <span class="r-who"><span class="r-name">${esc(c.name)}</span><span class="r-country">${esc(c.country)}${added ? (sheetMode === 'home' ? ' · current' : ' · added') : ''}</span></span>
         <span class="r-time"><b>${t.hm}${t.ap ? ' ' + t.ap : ''}</b>${fmtDiff(w.off - hereOff)}</span>
       </button>`;
     }).join('') : `<p class="empty">No city or time zone matches “${esc(q.value)}”.</p>`;
   }
-  function openSheet() {
+  function openSheet(mode) {
+    sheetMode = mode === 'home' ? 'home' : 'add';
+    $('sheetTitle').textContent = sheetMode === 'home' ? 'Your city' : 'Add a city';
     q.value = '';
     sheet.hidden = false;
     renderResults();
@@ -754,7 +773,9 @@ UTC|Coordinated Universal Time|UTC`;
     const b = e.target.closest('.result');
     if (!b || b.disabled) return;
     const c = shown[+b.dataset.i];
-    state.cities.push({ name: c.name, country: c.country, zone: c.zone });
+    const pickd = { name: c.name, country: c.country, zone: c.zone };
+    if (sheetMode === 'home') state.homeFor[HERE_ZONE] = pickd;
+    else state.cities.push(pickd);
     store.save();
     closeSheet();
     buildList();
@@ -765,7 +786,7 @@ UTC|Coordinated Universal Time|UTC`;
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && !sheet.hidden) closeSheet(); });
 
   // ---- controls ----
-  addBtn.addEventListener('click', openSheet);
+  addBtn.addEventListener('click', () => openSheet('add'));
   editBtn.addEventListener('click', () => {
     editing = !editing;
     document.body.classList.toggle('editing', editing);

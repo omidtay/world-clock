@@ -1,5 +1,5 @@
 // Offline support. The page is fetched network-first so new versions arrive whenever you're online.
-const CACHE = 'world-clock-v1';
+const CACHE = 'world-clock-v2';
 const CORE = ['./', 'index.html', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
